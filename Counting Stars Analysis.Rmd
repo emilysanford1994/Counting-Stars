@@ -1,0 +1,779 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r Libraries}
+library(easypackages)
+libraries("ggplot2", "dplyr","emmeans", "lmerTest", "effects", "gridExtra", 
+          "nlme", "stringdist", "lubridate", "tidyverse", "rstan", "MASS",
+          "glmmTMB","ppcor", "brms", "viridis", "ggeffects", "ggbeeswarm")
+
+`%notin%` <- Negate(`%in%`)
+
+# stan model settings
+my_seed <- 1234
+n_cores <- 4
+n_chains <- 4
+n_iter <- 5000
+```
+
+################################################################################
+
+```{r Import data}
+allData_tidy <- read.csv("Data/counting_stars_data.csv")
+giveN_data <- read.csv("Data/give_N_data.csv")
+```
+
+```{r Functions to organize Counting Stars responses}
+findPoint <- function(dataF, row, n){
+  # Point task
+  # Takes a dataframe and row and finds trial where total N = n
+  # Returns number of stars pointed at least once (miss = n - pointed)
+  # as well as number of double points
+  
+  if (!is.na(dataF$F_1_Total[row]) & dataF$F_1_Total[row] == n){
+    returnPointed <- dataF$F_1_Pointed[row]
+    returnDouble <- dataF$F_1_Double[row]
+  }
+  
+  else if (!is.na(dataF$F_2_Total[row]) & dataF$F_2_Total[row] == n){
+    returnPointed <- dataF$F_2_Pointed[row]
+    returnDouble <- dataF$F_2_Double[row]
+  }
+  
+  else if (!is.na(dataF$F_3_Total[row]) & dataF$F_3_Total[row] == n){
+    returnPointed <- dataF$F_3_Pointed[row]
+    returnDouble <- dataF$F_3_Double[row]
+  }
+  
+  else if (!is.na(dataF$F_4_Total[row]) & dataF$F_4_Total[row] == n){
+    returnPointed <- dataF$F_4_Pointed[row]
+    returnDouble <- dataF$F_4_Double[row]
+  } else {
+    returnPointed <- NA
+    returnDouble <- NA
+  }
+  
+  return (c(n,returnPointed,returnDouble))
+}
+
+
+findCount <- function(dataF, row, n){
+  # Count task
+  # Takes a dataframe and row and finds trial where total N = n
+  # Returns number of stars pointed at least once (miss = n - pointed)
+  # as well as number of double points
+  # and final numerical response
+  
+  if (!is.na(dataF$C_1_Total[row]) & dataF$C_1_Total[row] == n){
+    returnPointed <- dataF$C_1_Counted[row]
+    returnDouble <- dataF$C_1_Double[row]
+    returnResponse <- dataF$C_1_Response[row]
+  }
+  
+  else if (!is.na(dataF$C_2_Total[row]) & dataF$C_2_Total[row] == n){
+    returnPointed <- dataF$C_2_Counted[row]
+    returnDouble <- dataF$C_2_Double[row]
+    returnResponse <- dataF$C_2_Response[row]
+  }
+  
+  else if (!is.na(dataF$C_3_Total[row]) & dataF$C_3_Total[row] == n){
+    returnPointed <- dataF$C_3_Counted[row]
+    returnDouble <- dataF$C_3_Double[row]
+    returnResponse <- dataF$C_3_Response[row]
+  }
+  
+  else if (!is.na(dataF$C_4_Total[row]) & dataF$C_4_Total[row] == n){
+    returnPointed <- dataF$C_4_Counted[row]
+    returnDouble <- dataF$C_4_Double[row]
+    returnResponse <- dataF$C_4_Response[row]
+  } else {
+    returnPointed <- NA
+    returnDouble <- NA
+    returnResponse <- NA
+  }
+  
+  return (c(n,returnPointed,returnDouble,returnResponse))
+}
+```
+
+```{r Calculate Counting Stars errors}
+absError <- data.frame()
+for (i in 1:nrow(allData_tidy)){
+  # Get subject information for this row
+  subj <- allData_tidy$Subject.Number[i]
+  age <- allData_tidy$agedays[i]
+  age_years <- allData_tidy$age_years_decimal[i]
+  age_group <- allData_tidy$age_group[i]
+  giveN <- allData_tidy$Highest_N[i]
+  color <- allData_tidy$Condition[i]
+  
+  # Find data for each trial
+  for (n in c(4,5,8,9)){
+    # data from point task
+    point <- findPoint(allData_tidy, i, n)
+    # data from count task
+    count <- findCount(allData_tidy, i, n)
+    
+    # total number of points = point[2] + point[3]
+    point_response <- ifelse(!is.na(point[2]) & !is.na(point[3]), 
+                            point[2] + point[3],
+                            NA)
+    point_proportion <- ifelse(!is.na(point_response), 
+                              point_response / n,
+                              NA)
+    count_response <- ifelse(!is.na(count[2]) & !is.na(count[3]), 
+                             count[2] + count[3],
+                             NA)
+    count_proportion <- ifelse(!is.na(count_response), 
+                               count_response / n,
+                               NA)
+    
+    # Calculate error
+    # errors = misses & double counts 
+    # percent error = (misses + double counts) / n
+    
+    # point task
+    pointMisses <- ifelse(!is.na(point[2]), point[1] - point[2], NA)
+    pointDoubles <- ifelse(!is.na(point[3]), point[3], 0) # NA = no doubles
+    pointErrors <- pointMisses + pointDoubles
+    pointPercError <- pointErrors/point[1]
+    
+    # count task
+    countMisses <- ifelse(!is.na(count[2]), count[1] - count[2], NA)
+    countDoubles <- ifelse(!is.na(count[3]), count[3], 0) # NA = no doubles
+    countErrors <- countMisses + countDoubles
+    countPercError <- countErrors/count[1]
+    
+    # response error on count task
+    answerError <- ifelse(!is.na(count[4]), abs(count[4] - n), NA)
+    answerPercError <- ifelse(!is.na(count[4]),
+                              abs(count[4]-count[1])/count[1],
+                              NA)
+    
+    absError <- rbind(absError, 
+                      data.frame(subj,age,age_group,giveN,color, 
+                                 task="Point", n, answer = NA, 
+                                 answerError = NA, 
+                                 error = pointErrors, 
+                                 percError = pointPercError))
+    absError <- rbind(absError, 
+                      data.frame(subj,age,age_group,giveN,color, 
+                                 task="Count", 
+                                 n, answer = count[4], 
+                                 answerError = answerError, 
+                                 error = countErrors,
+                                 percError = countPercError))
+  }
+}
+
+# Total trials
+nTrials <- nrow(absError)
+
+# Remove NAs 
+absError_trimmed <- subset(absError, !is.na(error))
+
+# Now how many trials?
+nTrials_trimmed <- nrow(absError_trimmed)
+
+# How many trials were removed?
+nTrials
+nTrials_trimmed
+nTrials - nTrials_trimmed
+
+# Save trimmed to DF for analyses
+absError <- absError_trimmed
+```
+
+################################################################################
+
+## ANALYSES
+
+```{r Summary of sample}
+# N for give N only & full study
+nrow(giveN_data[giveN_data$giveN_only == 1,])
+nrow(giveN_data[giveN_data$giveN_only == 0,])
+
+# Ages per group
+giveN_data %>%
+  dplyr::select(giveN_only, age_years_decimal) %>%
+  na.omit() %>%
+  group_by(giveN_only) %>%
+  dplyr::summarize(meanAge = mean(age_years_decimal),
+                   sdAge = sd(age_years_decimal),
+                   minAge = min(age_years_decimal),
+                   maxAge = max(age_years_decimal))
+
+# Does age differ between groups?
+t.test(giveN_data$age_years_decimal ~ giveN_data$giveN_only)
+# Yes - full study older
+
+# Does age differ between Counting Stars conditions?
+t.test(age_years_decimal ~ Condition, data = allData_tidy)
+# No
+
+
+## Give-N
+
+# Does Give-N differ between groups?
+# convert to factors and center
+giveN_data$giveN <- as.numeric(giveN_data$giveN)
+giveN_data$giveN_only <- as.factor(giveN_data$giveN_only)
+giveN_data$age_c <- scale(giveN_data$age_years_decimal)[,1]
+
+# Test
+giveN_by_group <- brm(giveN ~ giveN_only * age_c, data = giveN_data,
+                      seed = my_seed, chains = n_chains, cores = n_cores,
+                      iter = n_iter)
+summary(giveN_by_group)
+# only very slightly
+
+# Does giveN differ by Condition?
+# Prepare data
+allData_tidy$conditionF <- factor(allData_tidy$Condition, 
+                              levels = sort(unique(allData_tidy$Condition)), 
+                              labels = c("Hard Attention", "Easy Attention"))
+allData_tidy$agedays_c <- scale(allData_tidy$age_years_decimal, 
+                                center=T, scale=F)[,1]
+
+# Test
+giveN_age <- brm(Highest_N ~ agedays_c * conditionF, data = allData_tidy,
+                 seed = my_seed, cores = n_cores, 
+                 chains = n_chains, iter = n_iter)
+summary(giveN_age)
+
+
+## Visualize Give-N distribution
+# organize data 
+giveN_plot_data <- giveN_data %>%
+  na.omit() %>%
+  group_by(age_group) %>%
+  mutate(n = n()) %>%
+  group_by(age_group, giveN, n) %>%
+  summarize(n_per = n()) %>%
+  mutate(perc = n_per/n,
+         n_label = paste("N = ", n_per, sep = "")) %>%
+  ungroup() %>%
+  group_by(age_group) %>%
+  mutate(group_perc = cumsum(perc)) %>% # cumulative percentage
+  # manually move plot labels
+  mutate(y_label = case_when(group_perc > .99 ~ .97,
+                             age_group == "3.5 - 4.5 years" & giveN == "2" ~ 
+                               group_perc - .015,
+                             age_group == "3.5 - 4.5 years" & giveN == "1" ~ 
+                               group_perc - .045,
+                             TRUE ~ group_perc - .03),
+         label_color = case_when(age_group == "< 3.5 years" & giveN == "0" ~ 
+                                   "black",
+                                 TRUE ~ "white"))
+giveN_plot_data$Highest_NF <- factor(giveN_plot_data$giveN,
+                                     levels = c(6,4,3,2,1,0))
+
+# plot
+giveN_plot <- ggplot(giveN_plot_data, 
+                     aes(x = age_group, y = perc, 
+                         color = Highest_NF, fill = Highest_NF))+ 
+  # bars
+  geom_bar(stat = "identity")+
+  # N labels
+  geom_text(aes(y = y_label, label = n_label), colour = "white", fontface = "bold")+
+  # theme
+  scale_y_continuous(breaks = seq(0,1,.25), labels = seq(0,100,25))+
+  theme_classic(base_size=14)+theme(aspect.ratio=.75)+
+  labs(x = "Age group", y = "% children", 
+       fill = "Highest Give-N", color = "Highest Give-N") +
+  scale_fill_viridis_d(begin = 0, end = .9, option = "plasma")+
+  scale_color_viridis_d(begin = 0, end = .9, option = "plasma")
+
+giveN_plot
+```
+
+```{r Procedural errors by task & color & age}
+## Prepare data
+# renumber subject, get age from other df and center
+absError$subjF <- as.numeric(as.factor(absError$subj))
+for (i in 1:nrow(absError)){
+  thisSubj <- absError$subj[i]
+  ageyears <- allData_tidy$age_years_decimal[allData_tidy$Subject.Number == thisSubj]
+  
+  absError$ageyears[i] <- ageyears
+}
+
+absError$age_c <- scale(absError$ageyears, center=T, scale=F)[,1]
+
+# convert predictors to factor
+absError$colorF <- factor(absError$color, 
+                          levels = c("2", "1"),
+                          labels = c("Easy Attention", "Hard Attention"))
+absError$taskF <- factor(absError$task, levels = c("Point", "Count"))
+
+
+## Analysis
+# Negative binomial distribution
+errors_by_task_color <- glmmTMB(error ~ taskF * colorF * age_c + 
+                                  offset(log(n)) + (1 | subj), 
+                                family = nbinom2, 
+                                data = absError)
+
+# View results
+summary(errors_by_task_color)
+
+
+## Summary statistics
+# by task
+absError %>%
+  group_by(taskF) %>%
+  summarize(m = mean(error),
+            sd = sd(error))
+
+# by condition
+absError %>%
+  group_by(colorF) %>%
+  summarize(m = mean(error),
+            sd = sd(error))
+
+# by task * condition
+absError %>%
+  group_by(taskF, colorF) %>%
+  summarize(m = mean(error),
+            sd = sd(error))
+```
+
+```{r Visualize procedural errors}
+## Task x Attention condition x Age 
+# Only visualize younger kids (where interesting data is)
+# calculate mean ages within splits
+mean_younger <- mean(absError$age_c[absError$age_c < 0])
+mean_older <- mean(absError$age_c[absError$age_c > 0])
+# Calculate marginal means
+errors_task_attention_emm <- as.data.frame(
+  emmeans(errors_by_task_color, 
+          ~ taskF * colorF | age_c, 
+          at = list(age_c = c(mean_younger, 
+                              mean_older),
+                    n=8)))
+
+# Plot (younger kids)
+error_task_cond_younger_p <- ggplot(absError[absError$age_c < 0,], 
+                                  aes(x = colorF, y = (error/n)*8, 
+                                      fill = colorF, color = colorF))+
+  facet_grid(~taskF)+
+  geom_point(size = 4, alpha = .35, 
+             position = position_jitter(height = .1, width = .25, seed = 1))+
+  # group means and error bars
+  geom_errorbar(data = errors_task_attention_emm[
+    errors_task_attention_emm$age_c == mean_younger,], 
+                aes(y = exp(emmean), 
+                    ymin = exp(emmean - SE), 
+                    ymax = exp(emmean + SE)),
+                size=.75,color = "black", width = .25)+
+  geom_point(data = errors_task_attention_emm[
+    errors_task_attention_emm$age_c == mean_younger,],
+             aes(y = exp(emmean)), 
+             shape = 23, size = 3, stroke=1, color = "black")+
+  # theme
+  theme_classic(base_size = 14)+
+  theme(aspect.ratio = 1, legend.position = "none")+
+  scale_x_discrete(limits = c("Easy Attention", "Hard Attention"),
+                   labels = c("Easy", "Hard"))+
+  labs(x = "Attention Condition", y = "# errors")+
+  scale_fill_viridis_d(begin=.6, end = 0)+
+  scale_color_viridis_d(begin=.6, end = 0)
+
+error_task_cond_younger_p
+```
+
+```{r Visualize procedural errors - Additional plots}
+## Supplemental
+
+## Age effect
+# calculate model prediction line
+pred <- ggpredict(errors_by_task_color, 
+                  terms = sprintf("age_c [%.2f:%.2f by=0.01]",-2,2),
+                  condition = c(n = 8))
+pred_df <- as.data.frame(pred)
+
+# plot
+error_age_p <- ggplot(absError, aes(x=ageyears, y = error))+
+  # data points
+  geom_point(alpha = .15, size = 4, color = viridis_pal()(5)[3],
+             position = position_jitter(height = .1, width = 0, seed = 1))+
+  # trend line and ribbon
+  geom_ribbon(data = pred_df, fill = viridis_pal()(5)[3],
+              alpha = .1,
+              aes(x = x + mean(absError$ageyears),
+                  y = predicted,
+                  ymin = conf.low, ymax = conf.high))+
+  geom_path(data = pred_df, color = viridis_pal()(5)[3],
+            aes(x = x + mean(absError$ageyears), 
+                y = predicted))+
+  # theme
+  theme_classic(base_size = 14)+
+  coord_cartesian(ylim = c(0, 8))+
+  scale_y_continuous(breaks = seq(0,8,2))+
+  theme(aspect.ratio = 1.25)+
+  labs(x = "Age (years)", y = "# errors", title="")
+
+## Task
+# Calculate marginal means
+errors_task_emm <- as.data.frame(emmeans(errors_by_task_color, 
+                                                   ~ taskF))
+
+# Plot
+error_task_p <- ggplot(absError, aes(x = taskF, y = (error/n)*8, 
+                     fill = taskF, color = taskF))+
+  geom_point(size = 4, alpha = .35, 
+             position = position_jitter(height = .1, width = .25, seed = 1))+
+  # group means and error bars
+  geom_errorbar(data = errors_task_emm, 
+                aes(y = exp(emmean)*8, 
+                    ymin = exp(emmean - SE)*8, 
+                    ymax = exp(emmean + SE)*8),
+                size=.75,color = "black", width = .25)+
+  geom_point(data = errors_task_emm, aes(y = exp(emmean)*8), 
+             shape = 23, size = 3, stroke=1, color = "black")+
+  # theme
+  theme_classic(base_size = 14)+
+  theme(aspect.ratio = 1.25, legend.position = "none")+
+  labs(x = "Task", y = "# errors")+
+  scale_fill_viridis_d(begin=.5, end = 0)+
+  scale_color_viridis_d(begin=.5, end = 0)
+
+## 3. Attention condition
+# Calculate marginal means
+errors_attention_emm <- as.data.frame(emmeans(errors_by_task_color, 
+                                                   ~ colorF))
+
+# Plot
+error_cond_p <- ggplot(absError, aes(x = colorF, y = (error/n)*8, 
+                     fill = colorF, color = colorF))+
+  geom_point(size = 4, alpha = .35, 
+             position = position_jitter(height = .1, width = .25, seed = 1))+
+  # group means and error bars
+  geom_errorbar(data = errors_attention_emm, 
+                aes(y = exp(emmean)*8, 
+                    ymin = exp(emmean - SE)*8, 
+                    ymax = exp(emmean + SE)*8),
+                size=.75,color = "black", width = .25)+
+  geom_point(data = errors_attention_emm, aes(y = exp(emmean)*8), 
+             shape = 23, size = 3, stroke=1, color = "black")+
+  # theme
+  theme_classic(base_size = 14)+
+  theme(aspect.ratio = 1.25, legend.position = "none")+
+  scale_x_discrete(limits = c("Easy Attention", "Hard Attention"),
+                     labels = c("Easy", "Hard"))+
+  labs(x = "Attention Condition", y = "# errors", color = "Condition", fill = "Condition")+
+  scale_fill_viridis_d(begin=.6, end = 0)+
+  scale_color_viridis_d(begin=.6, end = 0)
+
+# Older kids
+error_task_cond_older_p <- ggplot(absError[absError$age_c >= 0,], 
+             aes(x = colorF, y = (error/n)*8, 
+                     fill = colorF, color = colorF))+
+  facet_grid(~taskF)+
+  geom_point(size = 4, alpha = .35, 
+             position = position_jitter(height = .1, width = .25, seed = 1))+
+  # group means and error bars
+  geom_errorbar(data = errors_task_attention_emm[
+    errors_task_attention_emm$age_c == mean_older,], 
+                aes(y = exp(emmean), 
+                    ymin = exp(emmean - SE), 
+                    ymax = exp(emmean + SE)),
+                size=.75,color = "black", width = .25)+
+  geom_point(data = errors_task_attention_emm[
+    errors_task_attention_emm$age_c == mean_older,],
+             aes(y = exp(emmean)), 
+             shape = 23, size = 3, stroke=1, color = "black")+
+  # theme
+  theme_classic(base_size = 14)+
+  theme(aspect.ratio = 1.5, legend.position = "none")+
+  scale_x_discrete(limits = c("Easy Attention", "Hard Attention"),
+                   labels = c("Easy", "Hard"))+
+  labs(x = "Attention Condition", y = "# errors")+
+  scale_fill_viridis_d(begin=.6, end = 0)+
+  scale_color_viridis_d(begin=.6, end = 0)
+
+# Full data: Task x Attention condition x Age
+# calculate model prediction lines
+task_color_age_pred <- ggpredict(
+  errors_by_task_color, 
+  terms = c(sprintf("age_c [%.2f:%.2f by=0.01]",-2,2),
+            "colorF", "taskF"),
+  condition = c(n = 8))
+
+# plot
+error_task_cond_age_p <- plot(task_color_age_pred, show_data = T, 
+                              dot_size = 4, dot_alpha = .25)+
+  theme_classic(base_size = 14)+
+  coord_cartesian(ylim = c(0, 8))+
+  scale_y_continuous(breaks = seq(0,8,2))+
+  scale_x_continuous(labels = function(x) round(x + mean(absError$ageyears),0))+
+  theme(aspect.ratio = 1, legend.position ="none")+
+  labs(x = "Age (years)", y = "# errors", title = "")+
+  scale_fill_viridis_d(begin=.6, end = 0)+
+  scale_color_viridis_d(begin=.6, end = 0)
+
+error_age_p
+error_task_p
+error_cond_p
+error_task_cond_older_p
+error_task_cond_age_p
+```
+```{r Count response error by color}
+# Note: Count task only (no answer in Point task)
+# Prepare the data
+answerErrors <- subset(absError, !is.na(answerError))
+
+
+# Analysis
+# predict errors from task & color conditions,
+# controlling for age, accounting for N being counted on each trial (exposure)
+count_response_errors <- glmmTMB(answerError ~ colorF * age_c + 
+                                   offset(log(n)) + (1 | subj), 
+                                 data = answerErrors, 
+                                 family = nbinom2)
+
+# View results
+summary(count_response_errors)
+# color*age -> error marginal
+
+# Visualize
+# calculate model prediction lines
+count_color_age_pred <- ggpredict(count_response_errors, 
+                  terms = c(sprintf("age_c [%.2f:%.2f by=0.01]",-2,2),
+                            "colorF"),
+                  condition = c(n = 8))
+
+
+
+## just younger half
+answerErrors_young <- subset(answerErrors, age_c < 0)
+
+count_response_errors_young <- glmmTMB(answerError ~ colorF * age_c + 
+                                         offset(log(n)) + (1 | subj), 
+                                 data = answerErrors_young, 
+                                 family = nbinom2)
+
+# View results
+summary(count_response_errors_young)
+
+# Visualize
+# calculate model prediction lines
+count_color_age_younger_pred <- ggpredict(count_response_errors_young, 
+                  terms = c(sprintf("age_c [%.2f:%.2f by=0.01]",-2,0),
+                            "colorF"),
+                  condition = c(n = 8))
+
+# plot
+resp_error_younger_p <- plot(count_color_age_younger_pred, show_data = T, 
+           dot_size = 4, dot_alpha = .25, alpha = .25)+
+  theme_classic(base_size = 13)+
+  coord_cartesian(ylim = c(0, 8))+
+  scale_y_continuous(breaks = seq(0,8,2))+
+  scale_x_continuous(limits = c(-2, 0), breaks = seq(-2.17, .33, .5), 
+                     labels = seq(2, 4.5, .5))+
+  theme(aspect.ratio = 1)+
+  labs(x = "Age (years)", y = "response error", title = "",
+       color = "Attention Condition", fill = "Attention Condition")+
+  scale_fill_viridis_d(begin=.6, end = 0)+
+  scale_color_viridis_d(labels = c("Easy Attention" = "Easy",
+                                   "Hard Attention" = "Hard"),
+                        begin=.6, end = 0)
+
+# plot full data
+resp_error_all_p <- plot(count_color_age_pred, show_data = T, dot_size = 4, dot_alpha = .25)+
+  theme_classic(base_size = 14)+
+  coord_cartesian(ylim = c(0, 8))+
+  scale_y_continuous(breaks = seq(0,8,2))+
+  scale_x_continuous(labels = function(x) round(x + mean(absError$ageyears),0))+
+  theme(aspect.ratio = 1, legend.position ="none")+
+  labs(x = "Age (years)", y = "response error", title = "")+
+    scale_fill_viridis_d(begin=.6, end = 0)+
+  scale_color_viridis_d(labels = c("Easy Attention" = "Easy",
+                                   "Hard Attention" = "Hard"),
+                        begin=.6, end = 0)
+
+resp_error_younger_p
+resp_error_all_p
+
+# Summary statistics
+# Response error rate for older vs. kids
+mean(answerErrors$answerError[answerErrors$age_c > 0])
+mean(answerErrors$answerError[answerErrors$age_c <= 0])
+```
+
+```{r Count response errors by procedural errors}
+# By subject averages (trial-level non-sig)
+# re-calculate raw response error
+absError$respError <- absError$answerError * absError$n
+
+# add giveN groups
+absError <- absError %>%
+  mutate(giveN_group = case_when(giveN < 6 ~ "Subset-knowers",
+                                T ~ "Full Counters"))
+absError$giveN_groupF <- factor(absError$giveN_group, 
+                                levels = c("Subset-knowers","Full Counters"))
+
+# long to wide
+error_sum <- absError %>%
+  group_by(subj, age_c, age_group, colorF, giveN, giveN_groupF) %>%
+  dplyr::summarize(pointError = sum(error[task == "Point"], na.rm=T),
+            pointN = sum(n[task == "Point" & !is.na(error)], na.rm=T),
+            countError = sum(error[task == "Count"], na.rm=T),
+            countN = sum(n[task == "Count" & !is.na(error)], na.rm=T),
+            respError = sum(respError, na.rm = T)) %>%
+  mutate(pointError_rate = pointError / pointN,
+         countError_rate = countError / countN,
+         respError_rate = respError / countN)
+
+# visualize error rates
+hist(error_sum$pointError_rate)
+hist(error_sum$countError_rate)
+hist(error_sum$respError_rate)
+
+# extremely skewed - use ranks -> partial correlations
+
+# partial correlations 
+# overall
+pcor.test(x = error_sum$respError_rate, y = error_sum$countError_rate,
+          z = error_sum$age_c, method = "spearman")
+pcor.test(x = error_sum$respError_rate, y = error_sum$pointError_rate,
+          z = error_sum$age_c, method = "spearman")
+pcor.test(x = error_sum$respError_rate, y = error_sum$countError_rate,
+          z = error_sum$pointError_rate, method = "spearman")
+
+# split by condition
+# hard attention
+error_1 <- subset(error_sum, colorF == "Hard Attention")
+pcor.test(x = error_1$respError_rate, y = error_1$countError_rate,
+          z = error_1$age_c, method = "spearman")
+pcor.test(x = error_1$respError_rate, y = error_1$pointError_rate,
+          z = error_1$age_c, method = "spearman")
+pcor.test(x = error_1$respError_rate, y = error_1$countError_rate,
+          z = error_1$pointError_rate, method = "spearman")
+
+# easy attention
+error_2 <- subset(error_sum, colorF == "Easy Attention")
+pcor.test(x = error_2$respError_rate, y = error_2$countError_rate,
+          z = error_2$age_c, method = "spearman")
+pcor.test(x = error_2$respError_rate, y = error_2$pointError_rate,
+          z = error_2$age_c, method = "spearman")
+pcor.test(x = error_2$respError_rate, y = error_2$countError_rate,
+          z = error_2$pointError_rate, method = "spearman")
+
+# Response only predicted by count procedural error rate 
+# (controlling for both point & age)
+
+## Visualize
+resp_error_vs_proc_error_p <- ggplot(error_sum, aes(x = countError_rate, y = respError_rate, 
+                            color = colorF, fill = colorF))+
+  geom_smooth(method="lm", alpha = .25, linewidth = .75)+
+  geom_point(alpha = .25, size = 4,
+             position=position_jitter(width = .025, height = .025, seed = 1))+
+  labs(x = "Count procedural error rate (%)", 
+       y = "Count response error rate (%)",
+       color = "Attention Condition", fill = "Attention Condition")+
+  theme_classic(base_size=13)+theme(aspect.ratio=1)+
+  scale_y_continuous(limits = c(-.15,1), breaks = seq(0,1,.25), 
+                     labels = seq(0,100,25))+
+  scale_x_continuous(limits = c(-.15,1), breaks = seq(0,1,.25), 
+                     labels = seq(0,100,25))+
+  scale_fill_viridis_d(labels = c("Easy Attention" = "Easy",
+                                   "Hard Attention" = "Hard"),
+                       begin=.6, end = 0)+
+  scale_color_viridis_d(labels = c("Easy Attention" = "Easy",
+                                   "Hard Attention" = "Hard"),
+                        begin=.6, end = 0)
+
+resp_error_vs_proc_error_p
+```
+
+
+```{r Predicting Give-N}
+# Split Give-N by CP-knowers (1) vs. Subset-knowers (0)
+error_sum$giveN_groupN <- as.numeric(error_sum$giveN_groupF) - 1
+
+# how many per group
+error_sum %>%
+  group_by(giveN_groupN) %>%
+  summarize(n())
+
+# Center count and point error rates
+error_sum$point_c <- scale(error_sum$pointError_rate, center = T, scale = F)[,1]
+error_sum$count_c <- scale(error_sum$countError_rate, center = T, scale = F)[,1]
+
+# Model
+giveN_from_proc_3_way <- brm(giveN_groupN ~ (count_c + point_c) * colorF * age_c,
+                             data = error_sum, family = bernoulli(), 
+                             control = list(max_treedepth = 15),
+                             seed = my_seed, cores = n_cores, 
+                             chains = n_chains, iter = n_iter)
+
+# View result
+summary(giveN_from_proc_3_way)
+
+giveN_from_proc_two_way <- brm(giveN_groupN ~ (count_c + point_c) + colorF + age_c + 
+                                 (count_c + point_c) : colorF + (count_c + point_c) : age_c,
+                               control = list(max_treedepth = 15),
+                               data = error_sum, family = bernoulli(), 
+                               seed = my_seed, cores = n_cores, 
+                               chains = n_chains, iter = n_iter)
+
+summary(giveN_from_proc_two_way) # use this
+
+loo_compare(loo(giveN_from_proc_3_way), loo(giveN_from_proc_two_way))
+
+## Visualize
+
+# Re-order factor for plot order
+error_sum$colorF <- relevel(error_sum$colorF, ref = "Hard Attention")
+error_sum <- error_sum %>%
+  mutate(age_group = case_when(age_c >= 0 ~ "Older kids (> 4.16 years)",
+                               age_c < 0 ~ "Younger kids (< 4.16 years)"))
+error_sum$age_groupF <- factor(error_sum$age_group,
+                               levels = c("Younger kids (< 4.16 years)",
+                                          "Older kids (> 4.16 years)"))
+
+# GiveN vs. Point by Condition
+giveN_point_cond_p <- ggplot(error_sum, aes(x = giveN_groupF, y = pointError_rate, 
+                      color = giveN_groupF, fill = giveN_groupF))+
+  facet_wrap(~colorF)+
+  geom_beeswarm(size = 4, alpha = .25)+
+  stat_summary(fun.data = mean_cl_normal, geom = "errorbar", 
+               width = .2, size = .75, color = "black")+
+  stat_summary(fun = mean, geom = "point", shape = 23, 
+               size = 4, stroke = 1, color = "black")+
+  labs(x = "Give-N Group", y = "Point task error rate (%)")+
+  scale_y_continuous(limits = c(-.05,1), breaks = seq(0,1,.25), 
+                     labels = seq(0,100,25))+
+  theme_classic(base_size = 13)+
+  theme(aspect.ratio = 1, legend.position = "none")+
+  scale_fill_viridis_d(begin=.8, end = 0, option = "plasma")+
+  scale_color_viridis_d(begin=.8, end = 0, option = "plasma")
+
+# GiveN vs. Count by Age
+giveN_count_age_p <-  ggplot(error_sum, aes(x = giveN_groupF, y = countError_rate, 
+                      color = giveN_groupF, fill = giveN_groupF))+
+  facet_wrap(~age_groupF)+
+  geom_beeswarm(size = 4, alpha = .25)+
+  stat_summary(fun.data = mean_cl_normal, geom = "errorbar", 
+               width = .2, size = .75, color = "black")+
+  stat_summary(fun = mean, geom = "point", shape = 23, 
+               size = 4, stroke = 1, color = "black")+
+  labs(x = "Give-N Group", y = "Count task error rate (%)")+
+  scale_y_continuous(limits = c(-.05, 1), breaks = seq(0,1,.25), 
+                     labels = seq(0,100,25))+
+  theme_classic(base_size = 13)+
+  theme(aspect.ratio = 1, legend.position = "none")+
+  scale_fill_viridis_d(begin=.8, end = 0, option = "plasma")+
+  scale_color_viridis_d(begin=.8, end = 0, option = "plasma")
+
+giveN_point_cond_p
+giveN_count_age_p
+```
+
+
+
+
+
