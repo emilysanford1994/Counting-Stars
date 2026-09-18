@@ -729,11 +729,11 @@ loo_compare(loo(giveN_from_proc_3_way), loo(giveN_from_proc_two_way))
 # Re-order factor for plot order
 error_sum$colorF <- relevel(error_sum$colorF, ref = "Hard Attention")
 error_sum <- error_sum %>%
-  mutate(age_group = case_when(age_c >= 0 ~ "Older kids (> 4.16 years)",
-                               age_c < 0 ~ "Younger kids (< 4.16 years)"))
+  mutate(age_group = case_when(age_c >= 0 ~ "Older children (> 4;2 years)",
+                               age_c < 0 ~ "Younger children (< 4;2 years)"))
 error_sum$age_groupF <- factor(error_sum$age_group,
-                               levels = c("Younger kids (< 4.16 years)",
-                                          "Older kids (> 4.16 years)"))
+                               levels = c("Younger children (< 4;2 years)",
+                                          "Older children (> 4;2 years)"))
 
 # GiveN vs. Point by Condition
 giveN_point_cond_p <- ggplot(error_sum, aes(x = giveN_groupF, y = pointError_rate, 
